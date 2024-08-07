@@ -9,14 +9,18 @@
 #define LED_YELLOW 7
 
 // Define Buttons
-#define BUTTONK1 8
-#define BUTTONK2 9
+#define BUTTON_K1 8
+#define BUTTON_K2 9
 
 // Define buzzer pin and tone frequency
 #define BUZZER_PIN 3
 #define ALARM_TONE 1000  // Frequency for the continuous alarm sound
-#define BEEP_TONE 500   // Frequency for the button press beep sound
-#define BEEP_DURATION 100  // Duration of the beep sound in milliseconds
+#define BEEP_TONE 500    // Frequency for the button press beep sound
+#define BEEP_DURATION 100 // Duration of the beep sound in milliseconds
+
+// Define temperature thresholds
+#define TEMP_LOW_THRESHOLD 90
+#define TEMP_HIGH_THRESHOLD 100
 
 // Initialize buzzer
 PassiveBuzzer buzzer(BUZZER_PIN);
@@ -32,17 +36,16 @@ IRrecv IR(RECV_PIN);
 
 // Define IR key codes (update with actual key codes as needed)
 #define KEY_PREV 0x07 // Example key code for "<<"
-#define KEY_NEXT 0x09  // Example key code for ">>"
+#define KEY_NEXT 0x09 // Example key code for ">>"
 #define KEY_POWER 0x45 // Key code for power button
 
 // Variables for temperature control
-int setTemp = 95;  // Starting temperature value
-bool displayOn = false; // State of the 7-segment display
-bool powerState = false; // Power state of the display
+int setTemp = 95;     // Starting temperature value
+bool isDisplayOn = false; // State of the 7-segment display
+bool isPowerOn = false;   // Power state of the display
 
 void setup() {
-  // Initialize serial communication
-  Serial.begin(9600);
+  Serial.begin(9600); // Initialize serial communication
 
   // Set pin modes for LEDs
   pinMode(LED_RED, OUTPUT);
@@ -56,20 +59,19 @@ void setup() {
   IR.enableIRIn();
 
   // Set pin modes for buttons
-  pinMode(BUTTONK1, INPUT_PULLUP); // Use INPUT_PULLUP to avoid needing an external resistor
+  pinMode(BUTTON_K1, INPUT_PULLUP); // Use INPUT_PULLUP to avoid needing an external resistor
 }
 
 void loop() {
-  handleIR();        // Handle IR remote input
-  checkEmergencyButton(); // Check the state of the emergency button
-  updateDisplay();   // Update display based on state and temperature
-  handleLEDsBuzzer(); // Handle LEDs and buzzer behavior
+  processIRInput();         // Handle IR remote input
+  handleEmergencyButton();  // Check and handle the emergency button
+  updateDisplay();          // Update the display based on state and temperature
+  manageLEDsAndBuzzer();    // Manage LEDs and buzzer behavior
 
   delay(1000); // Add a delay for stability
 }
 
-// Handle IR remote input
-void handleIR() {
+void processIRInput() {
   if (IR.decode()) {
     if (IR.isReleased()) {
       switch (IR.keycode) {
@@ -83,9 +85,9 @@ void handleIR() {
           break;
         case KEY_POWER:
           // Toggle the power state of the display
-          powerState = !powerState;
-          displayOn = powerState; // Update displayOn based on powerState
-          if (displayOn) {
+          isPowerOn = !isPowerOn;
+          isDisplayOn = isPowerOn; // Update isDisplayOn based on isPowerOn
+          if (isDisplayOn) {
             Serial.println("Display turned ON");
             digitalWrite(LED_GREEN, HIGH); // Turn on the green LED
           } else {
@@ -99,7 +101,7 @@ void handleIR() {
           break;
       }
       // Update display
-      if (displayOn) {
+      if (isDisplayOn) {
         displayTemperature(setTemp);
       }
       Serial.print("Set temperature: ");
@@ -109,109 +111,118 @@ void handleIR() {
   }
 }
 
-// Check the state of the emergency button
-void checkEmergencyButton() {
-  if (digitalRead(BUTTONK1) == LOW) { // Button pressed (active low)
-    // Stop the buzzer
-    buzzer.playTone(ALARM_TONE, 0);
+void handleEmergencyButton() {
+  if (digitalRead(BUTTON_K1) == LOW) { // Button pressed (active low)
+    stopBuzzer();
 
-    // Reset temperature to 95C
+    // Reset temperature to a default safe value
     setTemp = 95;
-    
-    // Turn on the green LED
+
+    // Turn on the green LED to indicate safe state
     digitalWrite(LED_GREEN, HIGH);
-    
+
     // Turn off other LEDs
     digitalWrite(LED_RED, LOW);
     digitalWrite(LED_YELLOW, LOW);
 
     // Display the reset temperature
-    if (displayOn) {
+    if (isDisplayOn) {
       displayTemperature(setTemp);
     }
 
     Serial.println("Emergency button pressed. Temperature reset to 95C.");
   } else {
-    // Turn off the green LED when the button is not pressed
-    digitalWrite(LED_GREEN, LOW);
+    digitalWrite(LED_GREEN, LOW); // Turn off the green LED when the button is not pressed
   }
 }
 
-// Update display based on current temperature
 void updateDisplay() {
-  if (displayOn) {
+  if (isDisplayOn) {
     displayTemperature(setTemp);
   } else {
-    // Ensure buzzer is off when display is off
-    buzzer.playTone(ALARM_TONE, 0);
+    stopBuzzer(); // Ensure buzzer is off when display is off
   }
 }
 
-// Handle LEDs and buzzer behavior based on temperature
-void handleLEDsBuzzer() {
-  if (displayOn) {
-    if (setTemp < 90) {
-      // If the temperature is below 90, turn on the yellow LED and sound a continuous alarm
-      digitalWrite(LED_YELLOW, HIGH);  // Turn on yellow LED
-      buzzer.playTone(ALARM_TONE, 500);  // Continuous alarm tone at 1000Hz for 500ms
-      delay(500);  // Pause for half a second
-      digitalWrite(LED_YELLOW, LOW);   // Turn off yellow LED
-      delay(500);  // Pause for half a second
-    } else if (setTemp == 90) {
-      // If the temperature is exactly 90, turn on the yellow LED
-      digitalWrite(LED_YELLOW, HIGH);
-      // Ensure buzzer is off
-      buzzer.playTone(ALARM_TONE, 0);
+void manageLEDsAndBuzzer() {
+  if (isDisplayOn) {
+    if (setTemp < TEMP_LOW_THRESHOLD) {
+      turnOnYellowLED();
+      playAlarm();
+      delay(500);
+      turnOffYellowLED();
+      delay(500);
+    } else if (setTemp == TEMP_LOW_THRESHOLD) {
+      turnOnYellowLED();
+      stopBuzzer();
     } else {
-      // Turn off the yellow LED
-      digitalWrite(LED_YELLOW, LOW);
-      // Ensure buzzer is off
-      buzzer.playTone(ALARM_TONE, 0);
+      turnOffYellowLED();
+      stopBuzzer();
     }
 
-    if (setTemp >= 100) {
-      // If the temperature is 100 or above, turn on the red LED and sound a continuous alarm
-      digitalWrite(LED_RED, HIGH);  // Turn on red LED
-
-      // If the temperature is above 100, blink the red LED and sound a continuous alarm
-      if (setTemp > 100) {
-        digitalWrite(LED_RED, HIGH);  // Turn on red LED
-        buzzer.playTone(ALARM_TONE, 500);  // Continuous alarm tone at 1000Hz for 500ms
-        delay(500);  // Pause for half a second
-        digitalWrite(LED_RED, LOW);  // Turn off red LED
-        delay(500);  // Pause for half a second
+    if (setTemp >= TEMP_HIGH_THRESHOLD) {
+      turnOnRedLED();
+      if (setTemp > TEMP_HIGH_THRESHOLD) {
+        blinkRedLED();
       } else {
-        // Ensure buzzer is off if exactly 100
-        buzzer.playTone(ALARM_TONE, 0);
+        stopBuzzer();
       }
     } else {
-      // Turn off the red LED and ensure buzzer is off
-      digitalWrite(LED_RED, LOW);
-      buzzer.playTone(ALARM_TONE, 0);
+      turnOffRedLED();
+      stopBuzzer();
     }
   }
 }
 
-// Display temperature on 7-segment display
 void displayTemperature(int temperature) {
   int8_t digits[4];
   if (temperature < 0) {
     // Display a blank screen or a specific pattern when display is off
-    digits[0] = 0xFF; // Blank display (depends on the display library)
-    digits[1] = 0xFF; // Blank display
-    digits[2] = 0xFF; // Blank display
-    digits[3] = 0xFF; // Blank display
+    for (int i = 0; i < 4; i++) {
+      digits[i] = 0xFF; // Blank display
+    }
   } else {
-    digits[0] = temperature / 100;  // Hundreds place (usually blank for 0-99)
+    digits[0] = (temperature / 100) % 10; // Hundreds place
     digits[1] = (temperature / 10) % 10;  // Tens place
-    digits[2] = temperature % 10;  // Ones place
-    digits[3] = 12;  // Display 'C' for Celsius (if applicable)
+    digits[2] = temperature % 10;         // Ones place
+    digits[3] = 12;                       // Display 'C' for Celsius (if applicable)
   }
   tm1637.display(digits);
 }
 
-// Play a beep sound
 void playBeep() {
   buzzer.playTone(BEEP_TONE, BEEP_DURATION); // Play beep sound for a specified duration
   delay(BEEP_DURATION); // Wait for the beep duration to complete
+}
+
+// Utility functions for managing LEDs and buzzer
+void turnOnRedLED() {
+  digitalWrite(LED_RED, HIGH);
+}
+
+void turnOffRedLED() {
+  digitalWrite(LED_RED, LOW);
+}
+
+void turnOnYellowLED() {
+  digitalWrite(LED_YELLOW, HIGH);
+}
+
+void turnOffYellowLED() {
+  digitalWrite(LED_YELLOW, LOW);
+}
+
+void playAlarm() {
+  buzzer.playTone(ALARM_TONE, 500);
+}
+
+void stopBuzzer() {
+  buzzer.playTone(ALARM_TONE, 0);
+}
+
+void blinkRedLED() {
+  digitalWrite(LED_RED, HIGH);
+  delay(500);
+  digitalWrite(LED_RED, LOW);
+  delay(500);
 }
