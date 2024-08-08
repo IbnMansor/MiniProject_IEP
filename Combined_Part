@@ -1,0 +1,322 @@
+#include <Wire.h>
+#include "RichShieldTM1637.h"
+#include "RichShieldIRremote.h"
+#include "RichShieldPassiveBuzzer.h"
+ 
+// Define LED pins
+#define LED_RED 4
+#define LED_GREEN 5
+#define LED_YELLOW 7
+#define LED_BLUE 6
+ 
+// Define Buttons
+#define BUTTON_K1 8
+#define BUTTON_K2 9
+ 
+// Define buzzer pin and tone frequency
+#define BUZZER_PIN 3
+#define ALARM_TONE 1000  // Frequency for the continuous alarm sound
+#define BEEP_TONE 500    // Frequency for the button press beep sound
+#define BEEP_DURATION 100 // Duration of the beep sound in milliseconds
+ 
+// Define temperature thresholds
+#define TEMP_LOW_THRESHOLD 90
+#define TEMP_HIGH_THRESHOLD 100
+ 
+// Define Potentiometer pin
+#define POT_PIN A0
+ 
+// Initialize buzzer
+PassiveBuzzer buzzer(BUZZER_PIN);
+ 
+// Define 7-segment display pins
+#define CLK 10
+#define DIO 11
+TM1637 tm1637(CLK, DIO);
+ 
+// Define IR receiver pin
+#define RECV_PIN 2
+IRrecv IR(RECV_PIN);
+ 
+// Define IR key codes (update with actual key codes as needed)
+#define KEY_PREV 0x07 // Example key code for "<<"
+#define KEY_NEXT 0x09 // Example key code for ">>"
+#define KEY_POWER 0x45 // Key code for power button
+ 
+// Variables for temperature control
+int setTemp = 95;     // Starting temperature value
+bool isDisplayOn = false; // State of the 7-segment display
+bool isPowerOn = false;   // Power state of the display
+ 
+// Variables for humidity simulation
+bool systemActive = false;
+bool lastButtonState = HIGH;
+int ledPins[4] = {LED_RED, LED_GREEN, LED_YELLOW, LED_BLUE};
+bool ledStates[4] = {false, false, false, false};
+ 
+void setup() {
+  Serial.begin(9600); // Initialize serial communication
+ 
+  // Set pin modes for LEDs
+  for (int i = 0; i < 4; i++) {
+    pinMode(ledPins[i], OUTPUT);
+    digitalWrite(ledPins[i], LOW); // Initialize LEDs to off
+  }
+ 
+  // Set pin modes for buttons
+  pinMode(BUTTON_K1, INPUT_PULLUP); // Use INPUT_PULLUP for button
+  pinMode(BUTTON_K2, INPUT_PULLUP); // Use INPUT_PULLUP for button
+ 
+  // Initialize 7-segment display
+  tm1637.init();
+ 
+  // Initialize IR receiver
+  IR.enableIRIn();
+}
+ 
+void loop() {
+  processIRInput();         // Handle IR remote input
+  handleEmergencyButton();  // Check and handle the emergency button
+  checkButtonK2();          // Check and handle Button K2
+  updateDisplay();          // Update the display based on state and temperature
+  manageLEDsAndBuzzer();    // Manage LEDs and buzzer behavior
+ 
+  delay(100); // Add a delay for responsiveness and stability
+}
+ 
+// Process IR remote input for temperature control
+void processIRInput() {
+  if (IR.decode()) {
+    if (IR.isReleased()) {
+      switch (IR.keycode) {
+        case KEY_NEXT:
+          setTemp++;
+          playBeep(); // Play beep sound
+          break;
+        case KEY_PREV:
+          setTemp--;
+          playBeep(); // Play beep sound
+          break;
+        case KEY_POWER:
+          // Toggle the power state of the display
+          isPowerOn = !isPowerOn;
+          isDisplayOn = isPowerOn; // Update isDisplayOn based on isPowerOn
+          if (isDisplayOn) {
+            Serial.println("Display turned ON");
+            digitalWrite(LED_GREEN, HIGH); // Turn on the green LED
+          } else {
+            Serial.println("Display turned OFF");
+            digitalWrite(LED_GREEN, LOW);  // Turn off the green LED
+            displayTemperature(-1); // Show a blank or a special pattern
+          }
+          playBeep(); // Play beep sound
+          break;
+        default:
+          break;
+      }
+      // Update display
+      if (isDisplayOn) {
+        displayTemperature(setTemp);
+      }
+      Serial.print("Set temperature: ");
+      Serial.println(setTemp);
+      IR.resume();  // Resume IR reception
+    }
+  }
+}
+ 
+// Handle the emergency button (K1)
+void handleEmergencyButton() {
+  if (digitalRead(BUTTON_K1) == LOW) { // Button pressed (active low)
+    stopBuzzer();
+ 
+    // Reset temperature to a default safe value
+    setTemp = 95;
+ 
+    // Turn on the green LED to indicate safe state
+    digitalWrite(LED_GREEN, HIGH);
+ 
+    // Turn off other LEDs
+    digitalWrite(LED_RED, LOW);
+    digitalWrite(LED_YELLOW, LOW);
+ 
+    // Display the reset temperature
+    if (isDisplayOn) {
+      displayTemperature(setTemp);
+    }
+ 
+    Serial.println("Emergency button pressed. Temperature reset to 95C.");
+  } else {
+    digitalWrite(LED_GREEN, LOW); // Turn off the green LED when the button is not pressed
+  }
+}
+ 
+// Check and handle the state of Button K2 for humidity simulation
+void checkButtonK2() {
+  // Check the state of BUTTON_K2
+  bool buttonState = digitalRead(BUTTON_K2);
+ 
+  // Check for a button press (active low)
+  if (buttonState == LOW && lastButtonState == HIGH) {
+    // Toggle system state
+    systemActive = !systemActive;
+ 
+    if (!systemActive) {
+      // System is now inactive, turn off everything
+      digitalWrite(LED_GREEN, LOW);
+      int8_t blankDigits[4] = {0xFF, 0xFF, 0xFF, 0xFF}; // Blank display
+      tm1637.display(blankDigits);
+      for (int i = 0; i < 4; i++) {
+        digitalWrite(ledPins[i], LOW);
+        ledStates[i] = false;
+      }
+    }
+  }
+ 
+  // Update the last button state
+  lastButtonState = buttonState;
+ 
+  if (systemActive) {
+    // Read potentiometer value (0-1023)
+    int potValue = analogRead(POT_PIN);
+ 
+    // Map potentiometer value to a range for display (e.g., 0-99 for a percentage)
+    int humidityLevel = map(potValue, 0, 1023, 0, 99);
+ 
+    // Display the mapped humidity level on the 7-segment display
+    displayHumidity(humidityLevel);
+ 
+    // Update LEDs based on humidity level
+    updateLEDs(humidityLevel);
+ 
+    // Display potentiometer value for debugging
+    Serial.print("Potentiometer Value: "); Serial.println(potValue);
+    Serial.print("Simulated Humidity Level: "); Serial.println(humidityLevel);
+  }
+}
+ 
+// Update the display based on the current temperature
+void updateDisplay() {
+  if (isDisplayOn) {
+    displayTemperature(setTemp);
+  } else {
+    stopBuzzer(); // Ensure buzzer is off when display is off
+  }
+}
+ 
+// Manage LEDs and buzzer behavior based on temperature
+void manageLEDsAndBuzzer() {
+  if (isDisplayOn) {
+    if (setTemp < TEMP_LOW_THRESHOLD) {
+      turnOnYellowLED();
+      playAlarm();
+      delay(500);
+      turnOffYellowLED();
+      delay(500);
+    } else if (setTemp == TEMP_LOW_THRESHOLD) {
+      turnOnYellowLED();
+      stopBuzzer();
+    } else {
+      turnOffYellowLED();
+      stopBuzzer();
+    }
+ 
+    if (setTemp >= TEMP_HIGH_THRESHOLD) {
+      turnOnRedLED();
+      if (setTemp > TEMP_HIGH_THRESHOLD) {
+        blinkRedLED();
+      } else {
+        stopBuzzer();
+      }
+    } else {
+      turnOffRedLED();
+      stopBuzzer();
+    }
+  }
+}
+ 
+// Display the temperature on the 7-segment display
+void displayTemperature(int temperature) {
+  int8_t digits[4];
+  if (temperature < 0) {
+    // Display a blank screen or a specific pattern when display is off
+    for (int i = 0; i < 4; i++) {
+      digits[i] = 0xFF; // Blank display
+    }
+  } else {
+    digits[0] = (temperature / 100) % 10; // Hundreds place
+    digits[1] = (temperature / 10) % 10;  // Tens place
+    digits[2] = temperature % 10;         // Ones place
+    digits[3] = 12;                       // Display 'C' for Celsius (if applicable)
+  }
+  tm1637.display(digits);
+}
+ 
+// Display the humidity level on the 7-segment display
+void displayHumidity(int humidityLevel) {
+  int8_t digits[4];
+  digits[0] = (humidityLevel / 10) % 10; // Tens place
+  digits[1] = humidityLevel % 10;        // Ones place
+  digits[2] = 10;                        // Display '%' symbol (if applicable)
+  digits[3] = 12;                        // Display a letter or symbol for clarity
+  tm1637.display(digits);
+}
+ 
+// Play a beep sound for button press feedback
+void playBeep() {
+  buzzer.playTone(BEEP_TONE, BEEP_DURATION); // Play beep sound for a specified duration
+  delay(BEEP_DURATION); // Wait for the beep duration to complete
+}
+ 
+// Utility functions for managing LEDs and buzzer
+void turnOnRedLED() {
+  digitalWrite(LED_RED, HIGH);
+}
+ 
+void turnOffRedLED() {
+  digitalWrite(LED_RED, LOW);
+}
+ 
+void turnOnYellowLED() {
+  digitalWrite(LED_YELLOW, HIGH);
+}
+ 
+void turnOffYellowLED() {
+  digitalWrite(LED_YELLOW, LOW);
+}
+ 
+void playAlarm() {
+  buzzer.playTone(ALARM_TONE, 500);
+}
+ 
+void stopBuzzer() {
+  buzzer.playTone(ALARM_TONE, 0);
+}
+ 
+void blinkRedLED() {
+  digitalWrite(LED_RED, HIGH);
+  delay(500);
+  digitalWrite(LED_RED, LOW);
+  delay(500);
+}
+ 
+// Function to update LED states based on humidity level
+void updateLEDs(int humidityLevel) {
+  // Turn off all LEDs except Green LED controlled by button
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(ledPins[i], LOW);
+    ledStates[i] = false;
+  }
+ 
+  // Control LEDs based on humidity level
+  if (humidityLevel < 25) {
+    digitalWrite(LED_RED, HIGH); // Example: Red LED for low humidity
+    ledStates[0] = true;
+  } else if (humidityLevel < 50) {
+    digitalWrite(LED_YELLOW, HIGH); // Example: Yellow LED for moderate humidity
+    ledStates[2] = true;
+  } else {
+    digitalWrite(LED_BLUE, HIGH); // Example: Blue LED for high humidity
+    ledStates[3] = true;
+  }
+}
